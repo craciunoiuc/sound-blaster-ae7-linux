@@ -1,0 +1,18 @@
+# Kernel source tree (cloned, huge — not version-controlled here)
+kernel/
+
+# Build artifacts (bzImage, initramfs, staged modules)
+build/
+!build/.gitkeep
+
+# Run logs (keep STATUS.md, ignore numbered/historical logs)
+logs/run-*.log
+logs/boot-test-*.log
+!logs/.gitkeep
+!logs/STATUS.md
+
+# Editor / OS cruft
+*.swp
+*.swo
+*~
+.DS_Store

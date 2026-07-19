@@ -1,0 +1,25 @@
+diff --git a/sound/hda/controllers/intel.c b/sound/hda/controllers/intel.c
+index 4b03c64e7..c24e0e5a4 100644
+--- a/sound/hda/controllers/intel.c
++++ b/sound/hda/controllers/intel.c
+@@ -2775,6 +2775,20 @@ static const struct pci_device_id azx_ids[] = {
+ 	  .driver_data = AZX_DRIVER_TERA | AZX_DCAPS_NO_64BIT },
+ 	{ PCI_DEVICE(0x6549, 0x2200),
+ 	  .driver_data = AZX_DRIVER_TERA | AZX_DCAPS_NO_64BIT },
++	/* Sound Blaster AE-7 / AE-9: CA0132 HDA controller.
++	 * The CA0132 shares PCI device ID 0x0010 with the older CA0110-IBG
++	 * (Sound Blaster X-Fi), but the CA0132's HDA controller is a standard
++	 * Intel-spec HDA controller. The CTHDA preset below (NO_MSI, NO_64BIT,
++	 * SNOOP_OFF, etc.) is wrong for it and causes a boot hang via the
++	 * controller's codec-probe error-recovery reset loop. Match on the AE-7
++	 * subsystem ID (0x0081) first and treat it as generic HDA.
++	 */
++	{ PCI_DEVICE_SUB(PCI_VENDOR_ID_CREATIVE, 0x0010,
++			 PCI_VENDOR_ID_CREATIVE, 0x0081),
++	  .driver_data = AZX_DRIVER_GENERIC },
++	{ PCI_DEVICE_SUB(PCI_VENDOR_ID_CREATIVE, 0x0010,
++			 PCI_VENDOR_ID_CREATIVE, 0x0091),
++	  .driver_data = AZX_DRIVER_GENERIC },
+ 	/* Creative X-Fi (CA0110-IBG) */
+ 	/* CTHDA chips */
+ 	{ PCI_VDEVICE(CREATIVE, 0x0010),

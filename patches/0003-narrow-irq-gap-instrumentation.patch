@@ -1,0 +1,104 @@
+diff --git a/sound/hda/controllers/intel.c b/sound/hda/controllers/intel.c
+index 4b03c64e7..9db947802 100644
+--- a/sound/hda/controllers/intel.c
++++ b/sound/hda/controllers/intel.c
+@@ -562,20 +562,25 @@ static void hda_intel_init_chip(struct azx *chip, bool full_reset)
+ 		pci_write_config_dword(pci, INTEL_HDA_CGCTL, val);
+ 	}
+ 	azx_init_chip(chip, full_reset);
++	dev_info(chip->card->dev, "HDACTRLDBG: hda_intel_init_chip after azx_init_chip\n");
+ 	if (chip->driver_type == AZX_DRIVER_SKL) {
+ 		pci_read_config_dword(pci, INTEL_HDA_CGCTL, &val);
+ 		val = val | INTEL_HDA_CGCTL_MISCBDCGE;
+ 		pci_write_config_dword(pci, INTEL_HDA_CGCTL, val);
+ 	}
+ 
++	dev_info(chip->card->dev, "HDACTRLDBG: hda_intel_init_chip before set_codec_wakeup(false)\n");
+ 	snd_hdac_set_codec_wakeup(bus, false);
++	dev_info(chip->card->dev, "HDACTRLDBG: hda_intel_init_chip after set_codec_wakeup(false)\n");
+ 
+ 	/* reduce dma latency to avoid noise */
+ 	if (HDA_CONTROLLER_IS_APL(pci))
+ 		bxt_reduce_dma_latency(chip);
+ 
++	dev_info(chip->card->dev, "HDACTRLDBG: hda_intel_init_chip before mlcap/intel_init_lctl check (mlcap=%px)\n", bus->mlcap);
+ 	if (bus->mlcap != NULL)
+ 		intel_init_lctl(chip);
++	dev_info(chip->card->dev, "HDACTRLDBG: hda_intel_init_chip END\n");
+ }
+ 
+ /* calculate runtime delay from LPIB */
+@@ -790,13 +795,16 @@ static int azx_acquire_irq(struct azx *chip, int do_disconnect)
+ 	struct hdac_bus *bus = azx_bus(chip);
+ 	int ret;
+ 
++	dev_info(chip->card->dev, "HDACTRLDBG: azx_acquire_irq entry, msi=%d\n", chip->msi);
+ 	if (!chip->msi || pci_alloc_irq_vectors(chip->pci, 1, 1, PCI_IRQ_MSI) < 0) {
++		dev_info(chip->card->dev, "HDACTRLDBG: azx_acquire_irq MSI failed, trying INTX\n");
+ 		ret = pci_alloc_irq_vectors(chip->pci, 1, 1, PCI_IRQ_INTX);
+ 		if (ret < 0)
+ 			return ret;
+ 		chip->msi = 0;
+ 	}
+ 
++	dev_info(chip->card->dev, "HDACTRLDBG: azx_acquire_irq before request_irq (irq=%d)\n", chip->pci->irq);
+ 	if (request_irq(chip->pci->irq, azx_interrupt,
+ 			chip->msi ? 0 : IRQF_SHARED,
+ 			chip->card->irq_descr, chip)) {
+@@ -809,6 +817,7 @@ static int azx_acquire_irq(struct azx *chip, int do_disconnect)
+ 	}
+ 	bus->irq = chip->pci->irq;
+ 	chip->card->sync_irq = bus->irq;
++	dev_info(chip->card->dev, "HDACTRLDBG: azx_acquire_irq SUCCESS irq=%d msi=%d\n", bus->irq, chip->msi);
+ 	return 0;
+ }
+ 
+@@ -2057,13 +2066,16 @@ static int azx_first_init(struct azx *chip)
+ 	snd_hdac_i915_set_bclk(bus);
+ 
+ 	hda_intel_init_chip(chip, (probe_only[dev] & 2) == 0);
++	dev_info(chip->card->dev, "HDACTRLDBG: azx_first_init after hda_intel_init_chip\n");
+ 
+ 	/* codec detection */
++	dev_info(chip->card->dev, "HDACTRLDBG: azx_first_init codec_mask=0x%lx\n", azx_bus(chip)->codec_mask);
+ 	if (!azx_bus(chip)->codec_mask) {
+ 		dev_err(card->dev, "no codecs found!\n");
+ 		/* keep running the rest for the runtime PM */
+ 	}
+ 
++	dev_info(chip->card->dev, "HDACTRLDBG: azx_first_init before azx_acquire_irq\n");
+ 	if (azx_acquire_irq(chip, 0) < 0)
+ 		return -EBUSY;
+ 
+@@ -2074,6 +2086,7 @@ static int azx_first_init(struct azx *chip)
+ 		 "%s at 0x%lx irq %i",
+ 		 card->shortname, bus->addr, bus->irq);
+ 
++	dev_info(chip->card->dev, "HDACTRLDBG: azx_first_init after azx_acquire_irq (irq=%d)\n", bus->irq);
+ 	return 0;
+ }
+ 
+@@ -2358,9 +2371,12 @@ static int azx_probe_continue(struct azx *chip)
+ 	 * this power. For other platforms, like Baytrail/Braswell, only the
+ 	 * display codec needs the power and it can be released after probe.
+ 	 */
++	dev_info(chip->card->dev, "HDACTRLDBG: azx_probe_continue start, before display_power\n");
+ 	display_power(chip, true);
++	dev_info(chip->card->dev, "HDACTRLDBG: after display_power\n");
+ 
+ 	err = azx_first_init(chip);
++	dev_info(chip->card->dev, "HDACTRLDBG: after azx_first_init (err=%d)\n", err);
+ 	if (err < 0)
+ 		goto out_free;
+ 
+@@ -2371,8 +2387,10 @@ static int azx_probe_continue(struct azx *chip)
+ 	chip->ctl_dev_id = ctl_dev_id;
+ 
+ 	/* create codec instances */
++	dev_info(chip->card->dev, "HDACTRLDBG: before azx_probe_codecs codec_mask=0x%lx\n", bus->codec_mask);
+ 	if (bus->codec_mask) {
+ 		err = azx_probe_codecs(chip, azx_max_codecs[chip->driver_type]);
++		dev_info(chip->card->dev, "HDACTRLDBG: after azx_probe_codecs (err=%d)\n", err);
+ 		if (err < 0)
+ 			goto out_free;
+ 	}

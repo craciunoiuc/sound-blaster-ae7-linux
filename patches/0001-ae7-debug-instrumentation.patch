@@ -1,0 +1,80 @@
+From: AE-7 debug rig <sound-card@example>
+Subject: [PATCH] ALSA: hda/ca0132: add AE7DBG instrumentation for AE-7 boot-hang diagnosis
+
+Iteration-zero patch: no behavior change, only adds AE7DBG: codec_info prints at
+every step of the AE-7 probe + init path so the serial log shows exactly where
+boot hangs.
+
+Apply with:
+    git -C kernel/ apply ../patches/0001-ae7-debug-instrumentation.patch
+
+The last AE7DBG line printed before the guest freezes is the next patch target.
+See reference/ae7-code-anchors.md for the hang-point decision table.
+
+NOTE: line numbers below are against v7.1.3. Re-grep after pulling new tags.
+
+---
+ sound/hda/codecs/ca0132.c | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/sound/hda/codecs/ca0132.c b/sound/hda/codecs/ca0132.c
+index be565ffaa..8316b69b5 100644
+--- a/sound/hda/codecs/ca0132.c
++++ b/sound/hda/codecs/ca0132.c
+@@ -9479,18 +9479,26 @@ static int ca0132_init(struct hda_codec *codec)
+ 
+ 	CLASS(snd_hda_power_pm, pm)(codec);
+ 
+-	if (ca0132_quirk(spec) == QUIRK_AE5 || ca0132_quirk(spec) == QUIRK_AE7)
++	if (ca0132_quirk(spec) == QUIRK_AE5 || ca0132_quirk(spec) == QUIRK_AE7) {
++		codec_info(codec, "AE7DBG: before ae5_register_set (first BAR2 writes)\n");
+ 		ae5_register_set(codec);
++		codec_info(codec, "AE7DBG: after ae5_register_set\n");
++	}
+ 
+ 	ca0132_init_params(codec);
++	codec_info(codec, "AE7DBG: after init_params\n");
+ 	ca0132_init_flags(codec);
++	codec_info(codec, "AE7DBG: after init_flags\n");
+ 
+ 	snd_hda_sequence_write(codec, spec->base_init_verbs);
+ 
+ 	if (ca0132_use_alt_functions(spec))
+ 		ca0132_alt_init(codec);
+ 
++	codec_info(codec, "AE7DBG: before ca0132_download_dsp\n");
+ 	ca0132_download_dsp(codec);
++	codec_info(codec, "AE7DBG: after download_dsp, dsp_state=%d (DOWNLOADED=2,FAILED=3)\n",
++			   spec->dsp_state);
+ 
+ 	ca0132_refresh_widget_caps(codec);
+ 
+@@ -9507,7 +9515,9 @@ static int ca0132_init(struct hda_codec *codec)
+ 		ae5_setup_defaults(codec);
+ 		break;
+ 	case QUIRK_AE7:
++		codec_info(codec, "AE7DBG: before ae7_setup_defaults (heavy BAR2 use)\n");
+ 		ae7_setup_defaults(codec);
++		codec_info(codec, "AE7DBG: after ae7_setup_defaults\n");
+ 		break;
+ 	default:
+ 		ca0132_setup_defaults(codec);
+@@ -9923,6 +9933,8 @@ static int ca0132_codec_probe(struct hda_codec *codec,
+ 
+ 	/* Detect codec quirk */
+ 	snd_hda_pick_fixup(codec, ca0132_quirk_models, ca0132_quirks, NULL);
++	codec_info(codec, "AE7DBG: quirk resolved = %d (AE7=%d)\n",
++		   ca0132_quirk(spec), QUIRK_AE7);
+ 	if (ca0132_quirk(spec) == QUIRK_SBZ)
+ 		sbz_detect_quirk(codec);
+ 
+@@ -9992,6 +10004,9 @@ static int ca0132_codec_probe(struct hda_codec *codec,
+ #ifdef CONFIG_PCI
+ 	if (spec->use_pci_mmio) {
+ 		spec->mem_base = pci_iomap(codec->bus->pci, 2, 0xC20);
++		codec_info(codec, "AE7DBG: pci_iomap(BAR2) = %px%s\n",
++			   spec->mem_base,
++			   spec->mem_base ? "" : " (NULL -> QUIRK_NONE)");
+ 		if (spec->mem_base == NULL) {
+ 			codec_warn(codec, "pci_iomap failed! Setting quirk to QUIRK_NONE.");
+ 			codec->fixup_id = QUIRK_NONE;
