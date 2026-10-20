@@ -1,5 +1,8 @@
 # Agent hand-off
 
+This file is for driver work in this repository. To install the fix on a machine
+with an AE-7, follow [`README.md`](README.md), "Install the fix".
+
 The Creative AE-7 is a CA0132 HDA controller behind an ASMedia ASM1083/1085
 PCIe-to-PCI bridge. It works on the host since 2026-10-20 with the DKMS package
 `ae7-hda` (guest patches 0002 + 0003) and `iommu=pt`. Driver work happens in a
