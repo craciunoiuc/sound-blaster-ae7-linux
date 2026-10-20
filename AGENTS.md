@@ -1,110 +1,136 @@
-# Agent hand-off — read this first
+# Agent hand-off
 
-You are continuing work on the Creative AE-7 (CA0132 behind an ASMedia
-ASM1083/1085 PCIe-to-PCI bridge) Linux boot-hang investigation.
+The Creative AE-7 is a CA0132 HDA controller behind an ASMedia ASM1083/1085
+PCIe-to-PCI bridge. It works on the host since 2026-10-20 with the DKMS package
+`ae7-hda` (guest patches 0002 + 0003) and `iommu=pt`. Driver work happens in a
+QEMU/VFIO rig with a patchable guest kernel; bare-metal reboots are not part of
+the loop.
 
-## Current state (read this before anything else)
+The card is in one of two modes:
 
-**Authoritative summary:** [`reference/complete-findings.md`](reference/complete-findings.md)
+- **Host mode** (default): the DKMS `snd-hda-intel` drives the card. The guarded
+  claim in `/etc/modprobe.d/ae7-vfio.conf` hands the card to vfio-pci only on
+  kernels without the DKMS modules.
+- **VM mode**: the card is on vfio-pci (`sudo host/bind.sh --bind`), and the host
+  cmdline has `pcie_acs_override=downstream,multifunction` so that the card's
+  IOMMU group holds only the bridge and the controller. Reboot to go back.
 
-Three software bugs are FIXED (in the `kernel/` working tree):
-1. Plymouth (`splash`) blocks boot → removed from cmdline
-2. MSI allocation hangs → `snd_hda_intel.enable_msi=0`
-3. Concurrent-probe hard lockup → `azx_probe_serialize_mutex` in `intel.c`
+## Read first
 
-**Unsolved:** `probe_codec(addr=1)` returns `res=0x0` — the codec doesn't respond
-to the CORB/RIRB vendor-ID query through the bridge. The card works in Windows.
+1. [`reference/findings.md`](reference/findings.md): result, root cause, host
+   requirements, evidence, hardware, wrong old conclusions, open items.
+2. [`vm/experiments.md`](vm/experiments.md): the experiment plan and its results.
+3. The tail of [`logs/STATUS.md`](logs/STATUS.md): the last runs and decisions.
+4. [`reference/research.md`](reference/research.md) and
+   [`reference/ae7-outputs.md`](reference/ae7-outputs.md): external research.
 
-**The key experiment NOT YET RUN:** `snd_hda_intel.single_cmd=1`. This bypasses
-CORB/RIRB DMA and uses PIO immediate-command registers (controller MMIO, which
-the bridge *does* forward). The early blind test of `single_cmd=1` failed because
-the MSI hang and concurrent-probe lockup weren't fixed yet — they are now.
+Git history before the 2026-10-20 restructure (`80f4339`) has the old bare-metal
+docs and patches. Do not reuse any conclusion from them unless findings.md
+confirms it.
 
-## How to iterate (direct-to-hardware, NOT QEMU)
+## Before a passthrough run
 
-The investigation builds individual kernel modules and boots them on the host via
-a limine entry. Steps:
+`host/bind.sh --check` must pass: the card is bound to vfio-pci and its IOMMU group
+is viable. If it fails, the card is in host mode or the ACS override is missing.
+Ask the user to switch to VM mode (README, "The VM rig"). Agents do not do these
+steps.
 
-1. **Edit source** in `kernel/sound/hda/`:
-   - `controllers/intel.c` — the controller driver (probe, IRQ, caps)
-   - `common/controller.c` — core HDA bus (CORB/RIRB, probe_codec, reset)
-   - `core/controller.c` — bus init/reset primitives
-   - `codecs/ca0132.c` — the CA0132 codec driver
+## Iteration loop
 
-2. **Rebuild just the module** (seconds):
-   ```bash
-   cd kernel
-   make M=sound/hda/controllers modules    # for snd-hda-intel changes
-   # OR
-   make M=sound/hda/codecs modules          # for ca0132 changes
+1. **Edit** the guest kernel in `vm/linux/` (branch `ae7`). The main files are
+   `sound/hda/controllers/intel.c` (PCI driver, caps, probe),
+   `sound/hda/common/controller.c` (CORB/RIRB, `probe_codec`),
+   `sound/hda/core/controller.c` (reset, cmd I/O) and `sound/hda/codecs/ca0132.c`.
+   Print with `dev_*()` / `codec_*()` so that each line carries the BDF. The old
+   notes could not tell the AE-7 lines apart from the AMD HDA controllers.
+2. **Build**: `vm/kernel/build.sh` (incremental, output in `vm/build/`).
+3. **Run**:
+   - `vm/run.sh --emulated --test NAME` if you changed shared HDA code. It checks
+     that a normal controller still works.
+   - `vm/run.sh --passthrough --test NAME --name LABEL` for the card. run.sh runs
+     `sync` first. BAR access is trapped by default (`x-no-mmap=on`), which
+     spaces writes; `--mmap` gives real timing.
+   - Tests live in `vm/guest/tests/NAME.sh` (default `probe`): `probe`, `play`,
+     `verbs`, `regs`, `pio`, `shell`, `sweep` (each output in turn, voice/tone),
+     `outdiag` (play + record "What U Hear"), `mictest` (record, play back).
+     `regs` and `pio` use `vm/guest/tools/hda-mmio.py` to read BAR0 and send
+     immediate commands with no driver loaded.
+   - Use `Master` 90 or more when a person listens: Master scales both the DAC amp
+     and the DSP volume (`sweep`/`mictest` take it in `--test-args`).
+   - `--modparams "..."` takes bare `snd_hda_intel` parameters, for example
+     `--modparams "ae7_debug=1"`. Default is empty. Patch 0002 flushes each
+     register write on CTHDA unless `flush_writes=0` (that is the upstream driver).
+     Add `enable_msi=0` only if a patch removes the CTHDA NO_MSI cap.
+   - Other options: `--append "..."` (guest cmdline), `--test-args`, `--trace`
+     (QEMU vfio MMIO trace, disables mmap), `--timeout N`, `--interactive`,
+     `--dry-run`. See `vm/run.sh --help`.
+   - The last line is `RESULT: PASS|FAIL|TIMEOUT|NO-RESULT — reason — dir`. The
+     exit code is 0 only on PASS.
+4. **Read** `logs/run-NNN[-label]/`: `serial.log` (guest console), plus
+   `host-dmesg.txt` for passthrough runs and `qemu-trace.log` with `--trace`. If
+   the host log has IOMMU/AER/vfio lines, the RESULT reason shows how many.
+5. **Record**: append an entry to `logs/STATUS.md` (format in its header). If a
+   result changes what is known, update `reference/findings.md`.
+6. **Keep** a kernel change: commit it on `ae7` in `vm/linux`, then re-export the
+   whole series from the repo root (keep the fix patches free of the debug
+   patches, so that `host/dkms/mkdkms.sh` can apply 0002 + 0003 alone):
+   ```sh
+   rm -f vm/patches/*.patch
+   git -C vm/linux format-patch -o "$PWD/vm/patches" v7.2.10..ae7
    ```
+   `vm/kernel/fetch.sh` rebuilds `ae7` from `v7.2.10` + `vm/patches/`. It refuses
+   to run if the tree has local changes or commits that are not exported.
+   `--force` discards them.
 
-3. **Stage + install** (the rebuild produces an uncompressed `.ko`; compress it):
-   ```bash
-   zstd -f -19 kernel/sound/hda/controllers/snd-hda-intel.ko \
-     -o build/staging/lib/modules/7.1.3-dirty/kernel/sound/hda/controllers/snd-hda-intel.ko.zst
-   sudo cp build/staging/lib/modules/7.1.3-dirty/kernel/sound/hda/controllers/snd-hda-intel.ko.zst \
-     /lib/modules/7.1.3-dirty/kernel/sound/hda/controllers/
-   sudo depmod -a 7.1.3-dirty
-   ```
+## Conventions
 
-4. **Reboot** the `linux-ae7dbg` limine entry (created once via
-   `sudo limine-entry-tool --add-kernel "linux-ae7dbg" "/boot/initramfs-linux-ae7dbg.img" "/boot/vmlinuz-linux-ae7dbg"`).
-
-5. **Read the HDACTRLDBG prints** on the console (or photograph the freeze).
-   The last line before silence = the hang point.
-
-6. **Append to `logs/STATUS.md`** what happened.
-
-## The working cmdline
-
-```
-quiet nowatchdog rw root=UUID=cf0cc394-37e9-4774-b6be-57e55351af52 amd_iommu=on iommu=pt loglevel=8 ignore_loglevel snd_hda_intel.enable_msi=0
-```
-- No `splash` (Plymouth fix)
-- `loglevel=8 ignore_loglevel` only needed while reading HDACTRLDBG prints
-- `snd_hda_intel.enable_msi=0` required (MSI hangs through the bridge)
-- `module_blacklist=snd_hda_intel` is currently ON (safe/bootable state);
-  remove it to test the driver
-
-## The single_cmd experiment (do this next)
-
-Add to the cmdline (on top of the working baseline):
-```
-snd_hda_intel.enable_msi=0 snd_hda_intel.single_cmd=1
-```
-Remove `module_blacklist=snd_hda_intel`. Boot. Look for:
-```
-14:00.0: probe_codec after azx_get_response (err=0 res=0x????????)
-```
-- **Non-zero** (e.g. `0x1102xxxx`) → PIO works; the codec responds. Path to
-  host audio opens up (then debug ALSA/PipeWire for actual sound).
-- **`0x0` again** → bridge can't forward HDA verbs even via PIO. Confirm
-  hardware-level limitation → set up VFIO passthrough to Windows (the card works
-  there). Use `host/isolate-card.sh` + keep `snd_hda_intel` blacklisted.
-
-## Reading a hang (decision tree)
-
-| Last HDACTRLDBG line | Meaning |
-|---|---|
-| `azx_acquire_irq entry, msi=1` | MSI alloc hangs → ensure `enable_msi=0` |
-| `clocksource: Watchdog ... timed out` | Concurrent-probe lockup → ensure mutex present |
-| `probe_codec after azx_get_response (err=0 res=0x0)` | Bridge not forwarding CORB/RIRB → try `single_cmd=1` |
-| `probe_codec after azx_get_response (err=0 res=0x????)` | Codec responds! → debug the codec driver (ca0132.c) |
-| `ahci ... unavailable` / `xhci ... HC died` | Bus destabilized by AE-7 probing → the codec-query failure is the upstream cause |
+- Change one thing per run. Use a `--name` label that says what changed.
+- Run directories are gitignored. Copy the lines that matter (register values,
+  `res=`, errors, host dmesg) into `logs/STATUS.md`.
+- Find devices by ID (`1102:0010`, bridge `1b21:1080`), never by BDF. Bus numbers
+  shift when the card is installed. `ae7_bdfs` in `vm/config.sh` does the lookup.
+- In findings.md, keep observed facts apart from inferences. Mark guesses.
+- Shell scripts: bash, `set -euo pipefail`, source `vm/config.sh`. shellcheck is
+  not installed, so run at least `bash -n`.
+- Do not commit or push unless the user asks.
 
 ## Safety rules
 
-- **Do NOT boot without `snd_hda_intel.enable_msi=0`** if the driver is loading —
-  MSI allocation hangs the host (not recoverable without power-cycle).
-- **Do NOT remove the serialization mutex** if both AE-7 functions are present —
-  concurrent probe causes a hard CPU lockup.
-- Keep `module_blacklist=snd_hda_intel` as the safe default; only remove it for
-  active testing.
-- The AE-7's active probing can destabilize the PCIe bus and kill the AHCI
-  controller (RAID root). If you hit emergency mode, that's why.
+- **Never run `--mmap` with `flush_writes=0`.** Direct BAR access with the
+  upstream write bursts is the known bridge wedge (see `reference/findings.md`);
+  it can take down host devices on the same chipset.
+- **The stock `snd_hda_intel` must never probe the card.** Only the DKMS module
+  (with `flush_writes`) may drive it. Keep `/etc/modprobe.d/ae7-vfio.conf`; after
+  a kernel update the card stays on vfio-pci until the user rebuilds the DKMS
+  package for that kernel. The onboard AMD HDA controllers use `snd_hda_intel`
+  as normal.
+- **Host mode needs `iommu=pt`.** Without it the controller's read past the PCM
+  ring end faults in the IOMMU and the codec stops answering.
+- **The VM does not isolate the physical bus.** On bare metal, probing the card
+  killed the sibling xHCI and SATA controllers on chipset 2. nvme2 is half of the
+  root RAID0 and sits behind the same chipset uplink. A link fault can take down
+  the host's root filesystem. Therefore:
+  - Run `sync` before every passthrough run (`vm/run.sh` does it). Do the same
+    before anything else that touches the card from the host.
+  - The first passthrough run must be attended. The same applies to the first run
+    of a new kind of access (new test, DMA started a new way, reset changes): the
+    user is at the machine and ready to power-cycle. Ask before you start such a run.
+  - Stop and ask the user after any run that shows host AER, `IO_PAGE_FAULT`, or
+    errors from devices other than the card.
+- **No sudo** except the NOPASSWD entries that the scripts use
+  (`sudo -n qemu-system-x86_64`, `sudo -n dmesg`, `sudo -n lspci`). The user makes
+  all host changes (`host/setup.sh`, `host/dkms/install.sh`, cmdline, reboots).
+- Keep `vm/run.sh --emulated` working. It is the rig check before passthrough.
+- Changing the CTHDA caps is risky. When the old work dropped NO_MSI on bare metal,
+  `pci_alloc_irq_vectors()` hung.
 
-## Host quirk
+## Host quirks
 
-This CachyOS box has a `grep` shell-function wrapper that rejects combined flags
-(`grep -iE` → "conflicting matchers specified"). Use `/usr/bin/grep` everywhere.
+- CachyOS has a `grep` shell-function wrapper that rejects combined flags
+  (`grep -iE` gives "conflicting matchers specified"). Use `/usr/bin/grep` in
+  commands and scripts.
+- shellcheck is not installed.
+- The host cmdline lives in `/etc/default/limine` (`KERNEL_CMDLINE[default]`). It
+  must not contain `splash`.
+- The old bare-metal flow may have left `/lib/modules/7.1.3-dirty` and a
+  `linux-ae7dbg` limine entry. They are unused. Do not boot them.

@@ -1,97 +1,97 @@
-# sound-card — Creative AE-7 Linux boot-hang investigation
+# AE-7 on Linux
 
-Investigation into why the Creative Sound Blaster AE-7 (CA0132 codec behind an
-ASMedia ASM1083/1085 PCIe-to-PCI bridge) hangs Linux boot on a CachyOS host
-(MSI MAG X670E Tomahawk, Ryzen 7800X3D).
+The Creative Sound Blaster AE-7 now works on this CachyOS host (MSI MAG X670E
+Tomahawk, Ryzen 7 7800X3D): headphone, front out and mic.
 
-> **Start here:** [`reference/complete-findings.md`](reference/complete-findings.md)
-> is the authoritative summary of every finding, fix, and remaining experiment.
+The card is a CA0132 HDA controller (`1102:0010`) behind an ASMedia ASM1083/1085
+PCIe-to-PCI bridge (`1b21:1080` rev 03). The bridge wedges after a burst of posted
+MMIO writes, and the stock HDA init does such a burst. The fix reads back after
+each register write. Details: [`reference/findings.md`](reference/findings.md).
 
-## Outcome
+## Host setup (the fix)
 
-**Three real software bugs found and fixed** (in the working `kernel/` tree):
-1. Plymouth (`splash`) blocks early boot → remove `splash`
-2. MSI allocation hangs through the bridge → `snd_hda_intel.enable_msi=0`
-3. Concurrent probe of two PCI functions causes a hard CPU lockup → serialize
-   `azx_probe_continue` with a mutex
-
-**One unsolved core problem:** the CORB/RIRB command path to the codec returns
-`res=0x0` — the bridge doesn't forward HDA verbs under Linux. The card works in
-Windows, so the hardware is capable; Windows must initialize the bridge
-differently.
-
-**Highest-value next experiment (not yet run):** `snd_hda_intel.single_cmd=1`
-on top of the working baseline. This bypasses CORB/RIRB DMA and uses the PIO
-immediate-command registers (controller MMIO, which the bridge *does* forward
-correctly). See complete-findings.md §"The MOST IMPORTANT MISSED EXPERIMENT".
-
-## Status
-
-| Item | State |
-|---|---|
-| Card installed | ✅ `14:00.0` (CA0132) + `14:00.1` behind `13:00.0` ASMedia bridge |
-| Plymouth fix (`splash` removed) | ✅ |
-| MSI fix (`enable_msi=0`) | ✅ |
-| Probe serialization mutex | ✅ in `kernel/sound/hda/controllers/intel.c` |
-| DMA/snoop bridge override | ✅ in tree (didn't fix res=0x0 but is correct for the bridge) |
-| Host boots with `snd_hda_intel` blacklisted | ✅ |
-| Host boots with `snd_hda_intel` loading | ⚠️ reaches emergency mode (AHCI dies, codec returns 0x0) |
-| **`single_cmd=1` test** | ⬜ **NOT YET RUN — the key remaining experiment** |
-
-## Working kernel cmdline (current best)
-
-```
-quiet nowatchdog rw root=UUID=cf0cc394-37e9-4774-b6be-57e55351af52 amd_iommu=on iommu=pt loglevel=8 ignore_loglevel snd_hda_intel.enable_msi=0
-```
-- No `splash` (Plymouth fix)
-- `snd_hda_intel.enable_msi=0` (MSI fix)
-- `loglevel=8 ignore_loglevel` only needed while reading HDACTRLDBG prints
-
-## How the kernel was built/tested (direct-to-hardware)
-
-The investigation went direct-to-hardware via module rebuilds, not QEMU:
-1. Edit `kernel/sound/hda/controllers/intel.c` (and `controller.c`, `ca0132.c`)
-2. `cd kernel && make M=sound/hda/controllers modules` (seconds, not minutes)
-3. `sudo cp snd-hda-intel.ko.zst /lib/modules/7.1.3-dirty/.../ && sudo depmod -a`
-4. Reboot the `linux-ae7dbg` limine entry (created via `limine-entry-tool --add-kernel`)
-
-The full `bzImage` was built once via `make olddefconfig && make -j8 bzImage modules`
-using the CachyOS `.config`, then individual modules rebuilt per iteration.
-
-## Project layout
-
-```
-sound-card/
-├── README.md                       ← you are here
-├── AGENTS.md                       ← agent hand-off (needs update for direct-hardware flow)
-├── PLAN.md                         ← original methodology (QEMU-centric, partly superseded)
-├── reference/
-│   ├── complete-findings.md        ← AUTHORITATIVE summary of all findings + next step
-│   ├── ae7-code-anchors.md         ← ca0132.c function/line anchors (v7.1.3)
-│   └── archive/                    ← superseded phase docs (historical narrative)
-├── patches/
-│   ├── README.md                   ← patch conventions
-│   ├── 0001-ae7-debug-instrumentation.patch        ← ca0132 codec AE7DBG prints
-│   ├── 0002-hda-controller-debug-instrumentation.patch  ← controller HDACTRLDBG prints
-│   ├── 0003-narrow-irq-gap-instrumentation.patch   ← azx_acquire_irq + probe entry prints
-│   └── 0004-ae7-pci-id-fix.patch                   ← failed PCI-ID override (iteration artifact)
-├── host/
-│   ├── blacklist-ca0132.conf       ← host safety (install to /etc/modprobe.d/)
-│   ├── enable-iommu.md             ← AMD IOMMU setup for CachyOS/limine
-│   └── isolate-card.sh             ← bind AE-7 to vfio-pci (for passthrough)
-├── kernel/                         ← Linux v7.1.3 with all fixes applied (working tree)
-├── build/                          ← bzImage + initramfs + staged modules
-└── logs/STATUS.md                  ← iteration memory
+```sh
+host/dkms/mkdkms.sh            # as user: linux-stable sources + patches 0002/0003, test build
+sudo host/dkms/install.sh      # DKMS ae7-hda into updates/dkms + guarded vfio-pci claim
+# /etc/default/limine: KERNEL_CMDLINE[default]+=" iommu=pt"   (no "splash")
+sudo limine-update
+sync && reboot                 # first time: be at the machine
 ```
 
-## Key facts
+Then set the mixer once (`sudo alsactl store` keeps it):
 
-- **PCI IDs:** bridge `1b21:1080` rev 03; controller `1102:0010`; codec subsystem `1102:0081`
-- **Source (v7.1):** `sound/hda/controllers/intel.c` (controller),
-  `sound/hda/common/controller.c` (core), `sound/hda/codecs/ca0132.c` (codec)
-- **The card works in Windows** — the hardware is capable; the blocker is
-  Linux-side bridge initialization.
+```sh
+amixer -c Creative cset name='HP/Speaker Auto Detect Playback Switch' off
+amixer -c Creative cset name='Output Select' Headphone      # or Speakers (front out)
+amixer -c Creative cset name='Master Playback Volume' 90
+amixer -c Creative cset name='Mic Boost Capture Switch' 2   # 20 dB
+```
 
-## Sources
-- [Kernel Bugzilla #217510](https://bugzilla.kernel.org/show_bug.cgi?id=217510)
-- `../ZCodeProject/ae7-linux-testing.md` — original testing checklist
+Jacks on the rear bracket, counted from the right: 1 = mic, 2 = headphone,
+3 = front out. Rear, Center/Sub and optical are untested.
+
+- **`iommu=pt` is required.** The controller reads past the end of its PCM ring;
+  a translated IOMMU faults on that read and the codec stops answering.
+- **After a kernel update** run `host/dkms/mkdkms.sh` and
+  `sudo host/dkms/install.sh` again. Until then the guarded claim keeps the card
+  on vfio-pci: safe, but silent.
+- **Undo:** `sudo host/dkms/install.sh --uninstall` (back to the vfio-pci claim),
+  `sudo host/setup.sh --undo` (removes the claim and the sudoers entry).
+
+## The VM rig (for further driver work)
+
+QEMU direct-boots a patchable guest kernel (linux-stable v7.2.10 in `vm/linux/`)
+with the card passed through via VFIO. The guest root is the host `/` over
+read-only virtio-9p; a test script runs, output lands in `logs/run-NNN[-label]/`,
+the VM powers off. One iteration takes seconds and needs no host reboot.
+
+To switch the card from the host driver to the VM rig:
+
+```sh
+sudo host/setup.sh             # sudoers for qemu/dmesg/lspci (keeps the guarded claim)
+# /etc/default/limine: KERNEL_CMDLINE[default]+=" pcie_acs_override=downstream,multifunction"
+sudo limine-update && reboot
+sudo host/bind.sh --bind       # snd_hda_intel -> vfio-pci (stop using the card first)
+host/bind.sh --check
+```
+
+Then:
+
+```sh
+vm/kernel/fetch.sh             # clone v7.2.10, branch ae7, apply vm/patches
+vm/kernel/build.sh             # bzImage + modules into vm/build/
+vm/run.sh --emulated --test probe                          # rig check, no card
+vm/run.sh --passthrough --mmap --test sweep --test-args "30 all 90"
+```
+
+Reboot to give the card back to the host driver. See [`AGENTS.md`](AGENTS.md)
+for the loop and the safety rules, and [`vm/experiments.md`](vm/experiments.md)
+for the experiments and their results.
+
+## Layout
+
+```
+README.md               this file
+AGENTS.md               agent hand-off: loop, conventions, safety rules
+reference/
+  findings.md           result, root cause, evidence, hardware, wrong old conclusions
+  research.md           external research (bug reports, out-of-tree fixes)
+  ae7-outputs.md        jack map and output hardware research
+host/
+  dkms/mkdkms.sh        DKMS source tree + test build for a host kernel
+  dkms/install.sh       sudo: DKMS install/uninstall, guarded vfio-pci claim
+  setup.sh              sudo: vfio-pci claim, sudoers for the VM rig; --undo
+  bind.sh               --check / --status; sudo --bind / --unbind
+  capture.sh            root lspci, IOMMU group, reset_method, host dmesg
+vm/
+  config.sh             shared variables (KVER, IDs, paths, QEMU defaults)
+  run.sh                boot the guest, run one test, collect output
+  experiments.md        experiment plan and results
+  kernel/               fetch.sh, build.sh, ae7.config
+  patches/              guest patch series: 0002/0003 fix, 0001/0004 debug
+  guest/                init.sh (PID 1), tests/*.sh, tools/hda-mmio.py
+  linux/, build/        guest kernel source and build (gitignored)
+logs/
+  STATUS.md             append-only log of runs and decisions
+  run-*/, capture-*/    per-run and host capture output (gitignored)
+```
