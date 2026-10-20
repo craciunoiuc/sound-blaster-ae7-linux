@@ -1,0 +1,195 @@
+From e52b5aa41b765b7894cd1952f0f0e3c211543347 Mon Sep 17 00:00:00 2001
+From: Cezar Craciunoiu <cezar.craciunoiu@gmail.com>
+Date: Tue, 20 Oct 2026 20:23:34 +0300
+Subject: [PATCH 1/4] ALSA: hda: add ae7_debug register dump
+
+The codec probe on the Sound Blaster AE-7 (CA0132 behind an ASMedia
+ASM1083 bridge) fails or reads a zero vendor ID, but the driver does
+not show the controller state or the CORB/RIRB contents at that time.
+
+Add the ae7_debug option to snd-hda-intel. It prints GCAP and the
+effective caps at first init, and dumps the controller registers, the
+PCI status and the first ring entries around the codec probe and on
+response timeouts. The option is off by default.
+
+Signed-off-by: Cezar Craciunoiu <cezar.craciunoiu@gmail.com>
+---
+ sound/hda/common/controller.c     | 63 +++++++++++++++++++++++++++++++
+ sound/hda/common/hda_controller.h |  2 +
+ sound/hda/controllers/intel.c     | 21 +++++++++++
+ 3 files changed, 86 insertions(+)
+
+diff --git a/sound/hda/common/controller.c b/sound/hda/common/controller.c
+index 18dae022b..df64b3c9e 100644
+--- a/sound/hda/common/controller.c
++++ b/sound/hda/common/controller.c
+@@ -759,6 +759,60 @@ static unsigned int azx_command_addr(u32 cmd)
+ 	return addr;
+ }
+ 
++#define AZX_DEBUG_RING_ENTRIES	8
++
++/*
++ * Print the controller registers and the first CORB/RIRB entries.
++ * Do this only while chip->debug_dumps is more than zero.
++ */
++static void azx_debug_dump(struct azx *chip, const char *why, u32 cmd, u32 res)
++{
++	struct hdac_bus *bus = azx_bus(chip);
++	struct device *dev = chip->card->dev;
++	__le32 *corb = bus->corb.buf, *rirb = bus->rirb.buf;
++	u16 pci_cmd = 0, pci_sts = 0;
++	int i;
++
++	if (chip->debug_dumps <= 0)
++		return;
++	chip->debug_dumps--;
++
++	pci_read_config_word(chip->pci, PCI_COMMAND, &pci_cmd);
++	pci_read_config_word(chip->pci, PCI_STATUS, &pci_sts);
++	dev_info(dev, "ae7_debug: %s: cmd 0x%08x res 0x%08x, PCI CMD 0x%04x STS 0x%04x\n",
++		 why, cmd, res, pci_cmd, pci_sts);
++	dev_info(dev, "ae7_debug: GCTL 0x%08x STATESTS 0x%04x INTCTL 0x%08x INTSTS 0x%08x\n",
++		 azx_readl(chip, GCTL), azx_readw(chip, STATESTS),
++		 azx_readl(chip, INTCTL), azx_readl(chip, INTSTS));
++	dev_info(dev, "ae7_debug: CORB LBASE 0x%08x UBASE 0x%08x WP 0x%04x RP 0x%04x CTL 0x%02x STS 0x%02x SIZE 0x%02x\n",
++		 azx_readl(chip, CORBLBASE), azx_readl(chip, CORBUBASE),
++		 azx_readw(chip, CORBWP), azx_readw(chip, CORBRP),
++		 azx_readb(chip, CORBCTL), azx_readb(chip, CORBSTS),
++		 azx_readb(chip, CORBSIZE));
++	dev_info(dev, "ae7_debug: RIRB LBASE 0x%08x UBASE 0x%08x WP 0x%04x RINTCNT 0x%04x CTL 0x%02x STS 0x%02x SIZE 0x%02x\n",
++		 azx_readl(chip, RIRBLBASE), azx_readl(chip, RIRBUBASE),
++		 azx_readw(chip, RIRBWP), azx_readw(chip, RINTCNT),
++		 azx_readb(chip, RIRBCTL), azx_readb(chip, RIRBSTS),
++		 azx_readb(chip, RIRBSIZE));
++	dev_info(dev, "ae7_debug: IC 0x%08x IR 0x%08x ICS 0x%04x\n",
++		 azx_readl(chip, IC), azx_readl(chip, IR), azx_readw(chip, IRS));
++	dev_info(dev, "ae7_debug: sw: CORB %pad RIRB %pad rirb.wp %u rirb.rp %u polling %d single_cmd %d\n",
++		 &bus->corb.addr, &bus->rirb.addr, bus->rirb.wp, bus->rirb.rp,
++		 bus->polling_mode, chip->single_cmd);
++	if (!corb || !rirb)
++		return;
++	for (i = 0; i < AZX_DEBUG_RING_ENTRIES; i += 4)
++		dev_info(dev, "ae7_debug: CORB[%d..%d] %08x %08x %08x %08x\n",
++			 i, i + 3, le32_to_cpu(corb[i]), le32_to_cpu(corb[i + 1]),
++			 le32_to_cpu(corb[i + 2]), le32_to_cpu(corb[i + 3]));
++	/* Each RIRB entry has two words: the response and the extended response. */
++	for (i = 0; i < AZX_DEBUG_RING_ENTRIES; i += 2)
++		dev_info(dev, "ae7_debug: RIRB[%d..%d] %08x:%08x %08x:%08x\n",
++			 i, i + 1, le32_to_cpu(rirb[2 * i]),
++			 le32_to_cpu(rirb[2 * i + 1]), le32_to_cpu(rirb[2 * i + 2]),
++			 le32_to_cpu(rirb[2 * i + 3]));
++}
++
+ /* receive a response */
+ static int azx_rirb_get_response(struct hdac_bus *bus, unsigned int addr,
+ 				 unsigned int *res)
+@@ -772,6 +826,9 @@ static int azx_rirb_get_response(struct hdac_bus *bus, unsigned int addr,
+ 	if (!err)
+ 		return 0;
+ 
++	azx_debug_dump(chip, "RIRB response timeout", bus->last_cmd[addr],
++		       bus->rirb.res[addr]);
++
+ 	if (hbus->no_response_fallback)
+ 		return -EIO;
+ 
+@@ -852,6 +909,8 @@ static int azx_single_wait_for_response(struct azx *chip, unsigned int addr)
+ 	if (printk_ratelimit())
+ 		dev_dbg(chip->card->dev, "get_response timeout: IRS=0x%x\n",
+ 			azx_readw(chip, IRS));
++	azx_debug_dump(chip, "single_cmd response timeout",
++		       azx_bus(chip)->last_cmd[addr], -1);
+ 	azx_bus(chip)->rirb.res[addr] = -1;
+ 	return -EIO;
+ }
+@@ -881,6 +940,7 @@ static int azx_single_send_cmd(struct hdac_bus *bus, u32 val)
+ 		dev_dbg(chip->card->dev,
+ 			"send_cmd timeout: IRS=0x%x, val=0x%x\n",
+ 			azx_readw(chip, IRS), val);
++	azx_debug_dump(chip, "single_cmd ICB busy", val, -1);
+ 	return -EIO;
+ }
+ 
+@@ -1126,9 +1186,12 @@ static int probe_codec(struct azx *chip, int addr)
+ 
+ 	scoped_guard(mutex, &bus->cmd_mutex) {
+ 		chip->probing = 1;
++		azx_debug_dump(chip, "probe: before command", cmd, 0);
+ 		azx_send_cmd(bus, cmd);
+ 		err = azx_get_response(bus, addr, &res);
+ 		chip->probing = 0;
++		azx_debug_dump(chip, err < 0 ? "probe: error" : "probe: response",
++			       cmd, res);
+ 	}
+ 	if (err < 0 || res == -1)
+ 		return -EIO;
+diff --git a/sound/hda/common/hda_controller.h b/sound/hda/common/hda_controller.h
+index 38227f82e..219f5f30e 100644
+--- a/sound/hda/common/hda_controller.h
++++ b/sound/hda/common/hda_controller.h
+@@ -144,6 +144,8 @@ struct azx {
+ 	/* GTS present */
+ 	unsigned int gts_present:1;
+ 
++	int debug_dumps; /* register dumps that remain, 0 = off */
++
+ #ifdef CONFIG_SND_HDA_DSP_LOADER
+ 	struct azx_dev saved_azx_dev;
+ #endif
+diff --git a/sound/hda/controllers/intel.c b/sound/hda/controllers/intel.c
+index 28c55c5a2..edebde675 100644
+--- a/sound/hda/controllers/intel.c
++++ b/sound/hda/controllers/intel.c
+@@ -146,6 +146,9 @@ MODULE_PARM_DESC(single_cmd, "Use single command to communicate with codecs "
+ 		 "(for debugging only).");
+ module_param(enable_msi, bint, 0444);
+ MODULE_PARM_DESC(enable_msi, "Enable Message Signaled Interrupt (MSI)");
++static bool ae7_debug;
++module_param(ae7_debug, bool, 0444);
++MODULE_PARM_DESC(ae7_debug, "Print controller caps and register dumps at codec probe and on codec errors.");
+ #ifdef CONFIG_SND_HDA_PATCH_LOADER
+ module_param_array(patch, charp, NULL, 0444);
+ MODULE_PARM_DESC(patch, "Patch file for Intel HD audio interface.");
+@@ -1819,6 +1822,9 @@ static int azx_create(struct snd_card *card, struct pci_dev *pci,
+ 	else /* explicitly set to single_cmd or not */
+ 		chip->single_cmd = single_cmd;
+ 
++	/* Limit the dumps if the codec fails on each command. */
++	chip->debug_dumps = ae7_debug ? 16 : 0;
++
+ 	azx_check_snoop_available(chip);
+ 
+ 	if (bdl_pos_adj[dev] < 0)
+@@ -1952,6 +1958,13 @@ static int azx_first_init(struct azx *chip)
+ 
+ 	gcap = azx_readw(chip, GCAP);
+ 	dev_dbg(card->dev, "chipset global capabilities = 0x%x\n", gcap);
++	if (ae7_debug)
++		dev_info(card->dev,
++			 "ae7_debug: GCAP 0x%04x (64OK %d NSDO %d BSS %d ISS %d OSS %d) VMAJ %u VMIN %u subsys %04x:%04x\n",
++			 gcap, gcap & AZX_GCAP_64OK, (gcap >> 1) & 0x3,
++			 (gcap >> 3) & 0x1f, (gcap >> 8) & 0xf, (gcap >> 12) & 0xf,
++			 azx_readb(chip, VMAJ), azx_readb(chip, VMIN),
++			 pci->subsystem_vendor, pci->subsystem_device);
+ 
+ 	/* AMD devices support 40 or 48bit DMA, take the safe one */
+ 	if (chip->pci->vendor == PCI_VENDOR_ID_AMD)
+@@ -2058,6 +2071,14 @@ static int azx_first_init(struct azx *chip)
+ 
+ 	hda_intel_init_chip(chip, (probe_only[dev] & 2) == 0);
+ 
++	if (ae7_debug)
++		dev_info(card->dev,
++			 "ae7_debug: driver_type %d driver_caps 0x%08x dma_mask 0x%llx msi %d snoop %d posbuf %d single_cmd %d fallback %d codec_mask 0x%04lx\n",
++			 chip->driver_type, chip->driver_caps,
++			 (unsigned long long)dma_get_mask(&pci->dev), chip->msi,
++			 azx_snoop(chip), bus->use_posbuf, chip->single_cmd,
++			 chip->fallback_to_single_cmd, bus->codec_mask);
++
+ 	/* codec detection */
+ 	if (!azx_bus(chip)->codec_mask) {
+ 		dev_err(card->dev, "no codecs found!\n");
+-- 
+2.56.0
+

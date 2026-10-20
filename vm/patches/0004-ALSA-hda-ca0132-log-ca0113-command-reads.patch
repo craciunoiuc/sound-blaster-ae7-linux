@@ -1,0 +1,55 @@
+From c1a1745f05e0738e37bf213991106c4a473766d5 Mon Sep 17 00:00:00 2001
+From: Cezar Craciunoiu <cezar.craciunoiu@gmail.com>
+Date: Tue, 20 Oct 2026 21:30:05 +0300
+Subject: [PATCH 4/4] ALSA: hda/ca0132: log ca0113 command reads
+
+ca0113_mmio_command_set() reads the handshake and the three status
+registers of the ca0113 after each command, but it drops the values.
+So a log can not show if the ca0113 accepts the AE-5/AE-7 commands.
+
+Keep the values and print them with codec_dbg(). The output comes only
+when dynamic debug is on for snd-hda-codec-ca0132.
+
+Signed-off-by: Cezar Craciunoiu <cezar.craciunoiu@gmail.com>
+---
+ sound/hda/codecs/ca0132.c | 12 +++++++-----
+ 1 file changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/sound/hda/codecs/ca0132.c b/sound/hda/codecs/ca0132.c
+index 6f3f937e8..832935c60 100644
+--- a/sound/hda/codecs/ca0132.c
++++ b/sound/hda/codecs/ca0132.c
+@@ -3709,13 +3709,13 @@ static void ca0113_mmio_command_set(struct hda_codec *codec, unsigned int group,
+ 		unsigned int target, unsigned int value)
+ {
+ 	struct ca0132_spec *spec = codec->spec;
+-	unsigned int write_val;
++	unsigned int write_val, hs, r860, r854, r840;
+ 
+ 	ca0113_mmio_writel(codec, 0x0000007e, 0x210);
+ 	readl(spec->mem_base + 0x210);
+ 	ca0113_mmio_writel(codec, 0x0000005a, 0x210);
+ 	readl(spec->mem_base + 0x210);
+-	readl(spec->mem_base + 0x210);
++	hs = readl(spec->mem_base + 0x210);
+ 
+ 	ca0113_mmio_writel(codec, 0x00800005, 0x20c);
+ 	ca0113_mmio_writel(codec, group, 0x804);
+@@ -3731,9 +3731,11 @@ static void ca0113_mmio_command_set(struct hda_codec *codec, unsigned int group,
+ 	 */
+ 	msleep(20);
+ 
+-	readl(spec->mem_base + 0x860);
+-	readl(spec->mem_base + 0x854);
+-	readl(spec->mem_base + 0x840);
++	r860 = readl(spec->mem_base + 0x860);
++	r854 = readl(spec->mem_base + 0x854);
++	r840 = readl(spec->mem_base + 0x840);
++	codec_dbg(codec, "ca0113 cmd %02x/%02x=%02x: 0x210 %08x 0x860 %08x 0x854 %08x 0x840 %08x\n",
++		  group, target, value, hs, r860, r854, r840);
+ 
+ 	ca0113_mmio_writel(codec, 0x00800004, 0x20c);
+ 	ca0113_mmio_writel(codec, 0x00000000, 0x210);
+-- 
+2.56.0
+

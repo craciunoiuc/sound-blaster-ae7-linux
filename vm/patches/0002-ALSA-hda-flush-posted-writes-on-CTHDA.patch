@@ -1,0 +1,97 @@
+From bafd07de40faa03c4ec07cf0a22755b96a68f18c Mon Sep 17 00:00:00 2001
+From: Cezar Craciunoiu <cezar.craciunoiu@gmail.com>
+Date: Tue, 20 Oct 2026 20:39:02 +0300
+Subject: [PATCH 2/4] ALSA: hda: flush posted writes on CTHDA
+
+The Sound Blaster AE-7 and AE-9 put a CA0132 (CTHDA) behind an
+ASMedia ASM1083 bridge. A burst of posted MMIO writes at init stops
+the bridge: reads return all ones and the codec probe fails.
+
+Add a flush_writes bus flag that reads back after each register
+write. snd-hda-intel sets it for CTHDA, or with flush_writes=1.
+
+Link: https://bugzilla.kernel.org/show_bug.cgi?id=217510
+Link: https://bugzilla.kernel.org/show_bug.cgi?id=221614
+Signed-off-by: Cezar Craciunoiu <cezar.craciunoiu@gmail.com>
+---
+ include/sound/hdaudio.h       | 14 +++++++++++++-
+ sound/hda/controllers/intel.c | 10 ++++++++++
+ 2 files changed, 23 insertions(+), 1 deletion(-)
+
+diff --git a/include/sound/hdaudio.h b/include/sound/hdaudio.h
+index aa994d6e6..1083179cb 100644
+--- a/include/sound/hdaudio.h
++++ b/include/sound/hdaudio.h
+@@ -353,6 +353,7 @@ struct hdac_bus {
+ 	bool not_use_interrupts:1;	/* prohibiting the RIRB IRQ */
+ 	bool access_sdnctl_in_dword:1;	/* accessing the sdnctl register by dword */
+ 	bool use_pio_for_commands:1;	/* Use PIO instead of CORB for commands */
++	bool flush_writes:1;		/* read back after each register write */
+ 
+ 	int poll_count;
+ 
+@@ -435,6 +436,8 @@ static inline void snd_hdac_reg_writeb(struct hdac_bus *bus, void __iomem *addr,
+ 		snd_hdac_aligned_write(val, addr, 0xff);
+ 	else
+ 		writeb(val, addr);
++	if (bus->flush_writes)
++		readb(addr);
+ }
+ 
+ static inline void snd_hdac_reg_writew(struct hdac_bus *bus, void __iomem *addr,
+@@ -444,6 +447,8 @@ static inline void snd_hdac_reg_writew(struct hdac_bus *bus, void __iomem *addr,
+ 		snd_hdac_aligned_write(val, addr, 0xffff);
+ 	else
+ 		writew(val, addr);
++	if (bus->flush_writes)
++		readw(addr);
+ }
+ 
+ static inline u8 snd_hdac_reg_readb(struct hdac_bus *bus, void __iomem *addr)
+@@ -458,7 +463,14 @@ static inline u16 snd_hdac_reg_readw(struct hdac_bus *bus, void __iomem *addr)
+ 		snd_hdac_aligned_read(addr, 0xffff) : readw(addr);
+ }
+ 
+-#define snd_hdac_reg_writel(bus, addr, val)	writel(val, addr)
++static inline void snd_hdac_reg_writel(struct hdac_bus *bus, void __iomem *addr,
++				       u32 val)
++{
++	writel(val, addr);
++	if (bus->flush_writes)
++		readl(addr);
++}
++
+ #define snd_hdac_reg_readl(bus, addr)	readl(addr)
+ #define snd_hdac_reg_writeq(bus, addr, val)	writeq(val, addr)
+ #define snd_hdac_reg_readq(bus, addr)		readq(addr)
+diff --git a/sound/hda/controllers/intel.c b/sound/hda/controllers/intel.c
+index edebde675..e5cbc1869 100644
+--- a/sound/hda/controllers/intel.c
++++ b/sound/hda/controllers/intel.c
+@@ -164,6 +164,9 @@ MODULE_PARM_DESC(dmic_detect, "Allow DSP driver selection (bypass this driver) "
+ 		 "deprecated, use snd-intel-dspcfg.dsp_driver option instead");
+ module_param(ctl_dev_id, bool, 0444);
+ MODULE_PARM_DESC(ctl_dev_id, "Use control device identifier (based on codec address).");
++static int flush_writes = -1;
++module_param(flush_writes, bint, 0444);
++MODULE_PARM_DESC(flush_writes, "Read back after each register write (-1 = auto, 0 = off, 1 = on).");
+ 
+ #ifdef CONFIG_PM
+ static int param_set_xint(const char *val, const struct kernel_param *kp);
+@@ -1845,6 +1848,13 @@ static int azx_create(struct snd_card *card, struct pci_dev *pci,
+ 		chip->bus.core.needs_damn_long_delay = 1;
+ 	}
+ 
++	/* CTHDA behind an ASMedia bridge stops after a burst of posted writes. */
++	if (flush_writes > 0 ||
++	    (flush_writes < 0 && chip->driver_type == AZX_DRIVER_CTHDA)) {
++		dev_info(card->dev, "Flush each register write\n");
++		chip->bus.core.flush_writes = 1;
++	}
++
+ 	check_probe_mask(chip, dev);
+ 
+ 	err = snd_device_new(card, SNDRV_DEV_LOWLEVEL, chip, &ops);
+-- 
+2.56.0
+

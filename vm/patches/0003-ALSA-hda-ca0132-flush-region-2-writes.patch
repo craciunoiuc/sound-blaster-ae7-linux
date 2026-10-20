@@ -1,0 +1,307 @@
+From 633e96d4dabff88850f4d1ac98bd5caa476cdefd Mon Sep 17 00:00:00 2001
+From: Cezar Craciunoiu <cezar.craciunoiu@gmail.com>
+Date: Tue, 20 Oct 2026 20:39:02 +0300
+Subject: [PATCH 3/4] ALSA: hda/ca0132: flush region 2 writes
+
+The AE-7 writes PCI region 2 in bursts, for example eight writes to
+0x304 in a row. Behind the ASM1083 bridge these bursts can stop the
+card in the same way as the controller init writes.
+
+Send all region 2 writes through helpers that read region 0 after
+each write when the bus flag flush_writes is set.
+
+Signed-off-by: Cezar Craciunoiu <cezar.craciunoiu@gmail.com>
+---
+ sound/hda/codecs/ca0132.c | 135 ++++++++++++++++++++++++--------------
+ 1 file changed, 84 insertions(+), 51 deletions(-)
+
+diff --git a/sound/hda/codecs/ca0132.c b/sound/hda/codecs/ca0132.c
+index 3fe11983d..6f3f937e8 100644
+--- a/sound/hda/codecs/ca0132.c
++++ b/sound/hda/codecs/ca0132.c
+@@ -3638,6 +3638,45 @@ static bool dspload_wait_loaded(struct hda_codec *codec)
+  * commands.
+  */
+ 
++/*
++ * Write to the PCI region 2. If the bus flushes writes, read region 0 so the
++ * bridge on the card sends the posted write before the next one.
++ */
++static void ca0113_mmio_flush(struct hda_codec *codec)
++{
++	struct hdac_bus *bus = codec->core.bus;
++
++	if (bus->flush_writes)
++		readw(bus->remap_addr);
++}
++
++static void ca0113_mmio_writeb(struct hda_codec *codec, u8 val,
++			       unsigned int reg)
++{
++	struct ca0132_spec *spec = codec->spec;
++
++	writeb(val, spec->mem_base + reg);
++	ca0113_mmio_flush(codec);
++}
++
++static void ca0113_mmio_writew(struct hda_codec *codec, u16 val,
++			       unsigned int reg)
++{
++	struct ca0132_spec *spec = codec->spec;
++
++	writew(val, spec->mem_base + reg);
++	ca0113_mmio_flush(codec);
++}
++
++static void ca0113_mmio_writel(struct hda_codec *codec, u32 val,
++			       unsigned int reg)
++{
++	struct ca0132_spec *spec = codec->spec;
++
++	writel(val, spec->mem_base + reg);
++	ca0113_mmio_flush(codec);
++}
++
+ /*
+  * For cards with PCI-E region2 (Sound Blaster Z/ZxR, Recon3D, and AE-5)
+  * the mmio address 0x320 is used to set GPIO pins. The format for the data
+@@ -3650,13 +3689,12 @@ static bool dspload_wait_loaded(struct hda_codec *codec)
+ static void ca0113_mmio_gpio_set(struct hda_codec *codec, unsigned int gpio_pin,
+ 		bool enable)
+ {
+-	struct ca0132_spec *spec = codec->spec;
+ 	unsigned short gpio_data;
+ 
+ 	gpio_data = gpio_pin & 0xF;
+ 	gpio_data |= ((enable << 8) & 0x100);
+ 
+-	writew(gpio_data, spec->mem_base + 0x320);
++	ca0113_mmio_writew(codec, gpio_data, 0x320);
+ }
+ 
+ /*
+@@ -3673,21 +3711,21 @@ static void ca0113_mmio_command_set(struct hda_codec *codec, unsigned int group,
+ 	struct ca0132_spec *spec = codec->spec;
+ 	unsigned int write_val;
+ 
+-	writel(0x0000007e, spec->mem_base + 0x210);
++	ca0113_mmio_writel(codec, 0x0000007e, 0x210);
+ 	readl(spec->mem_base + 0x210);
+-	writel(0x0000005a, spec->mem_base + 0x210);
++	ca0113_mmio_writel(codec, 0x0000005a, 0x210);
+ 	readl(spec->mem_base + 0x210);
+ 	readl(spec->mem_base + 0x210);
+ 
+-	writel(0x00800005, spec->mem_base + 0x20c);
+-	writel(group, spec->mem_base + 0x804);
++	ca0113_mmio_writel(codec, 0x00800005, 0x20c);
++	ca0113_mmio_writel(codec, group, 0x804);
+ 
+-	writel(0x00800005, spec->mem_base + 0x20c);
++	ca0113_mmio_writel(codec, 0x00800005, 0x20c);
+ 	write_val = (target & 0xff);
+ 	write_val |= (value << 8);
+ 
+ 
+-	writel(write_val, spec->mem_base + 0x204);
++	ca0113_mmio_writel(codec, write_val, 0x204);
+ 	/*
+ 	 * Need delay here or else it goes too fast and works inconsistently.
+ 	 */
+@@ -3697,8 +3735,8 @@ static void ca0113_mmio_command_set(struct hda_codec *codec, unsigned int group,
+ 	readl(spec->mem_base + 0x854);
+ 	readl(spec->mem_base + 0x840);
+ 
+-	writel(0x00800004, spec->mem_base + 0x20c);
+-	writel(0x00000000, spec->mem_base + 0x210);
++	ca0113_mmio_writel(codec, 0x00800004, 0x20c);
++	ca0113_mmio_writel(codec, 0x00000000, 0x210);
+ 	readl(spec->mem_base + 0x210);
+ 	readl(spec->mem_base + 0x210);
+ }
+@@ -3712,28 +3750,28 @@ static void ca0113_mmio_command_set_type2(struct hda_codec *codec,
+ 	struct ca0132_spec *spec = codec->spec;
+ 	unsigned int write_val;
+ 
+-	writel(0x0000007e, spec->mem_base + 0x210);
++	ca0113_mmio_writel(codec, 0x0000007e, 0x210);
+ 	readl(spec->mem_base + 0x210);
+-	writel(0x0000005a, spec->mem_base + 0x210);
++	ca0113_mmio_writel(codec, 0x0000005a, 0x210);
+ 	readl(spec->mem_base + 0x210);
+ 	readl(spec->mem_base + 0x210);
+ 
+-	writel(0x00800003, spec->mem_base + 0x20c);
+-	writel(group, spec->mem_base + 0x804);
++	ca0113_mmio_writel(codec, 0x00800003, 0x20c);
++	ca0113_mmio_writel(codec, group, 0x804);
+ 
+-	writel(0x00800005, spec->mem_base + 0x20c);
++	ca0113_mmio_writel(codec, 0x00800005, 0x20c);
+ 	write_val = (target & 0xff);
+ 	write_val |= (value << 8);
+ 
+ 
+-	writel(write_val, spec->mem_base + 0x204);
++	ca0113_mmio_writel(codec, write_val, 0x204);
+ 	msleep(20);
+ 	readl(spec->mem_base + 0x860);
+ 	readl(spec->mem_base + 0x854);
+ 	readl(spec->mem_base + 0x840);
+ 
+-	writel(0x00800004, spec->mem_base + 0x20c);
+-	writel(0x00000000, spec->mem_base + 0x210);
++	ca0113_mmio_writel(codec, 0x00800004, 0x20c);
++	ca0113_mmio_writel(codec, 0x00000000, 0x210);
+ 	readl(spec->mem_base + 0x210);
+ 	readl(spec->mem_base + 0x210);
+ }
+@@ -7899,23 +7937,21 @@ static void ca0132_alt_dsp_initial_mic_setup(struct hda_codec *codec)
+ 
+ static void ae5_post_dsp_register_set(struct hda_codec *codec)
+ {
+-	struct ca0132_spec *spec = codec->spec;
+-
+ 	chipio_8051_write_direct(codec, 0x93, 0x10);
+ 	chipio_8051_write_pll_pmu(codec, 0x44, 0xc2);
+ 
+-	writeb(0xff, spec->mem_base + 0x304);
+-	writeb(0xff, spec->mem_base + 0x304);
+-	writeb(0xff, spec->mem_base + 0x304);
+-	writeb(0xff, spec->mem_base + 0x304);
+-	writeb(0x00, spec->mem_base + 0x100);
+-	writeb(0xff, spec->mem_base + 0x304);
+-	writeb(0x00, spec->mem_base + 0x100);
+-	writeb(0xff, spec->mem_base + 0x304);
+-	writeb(0x00, spec->mem_base + 0x100);
+-	writeb(0xff, spec->mem_base + 0x304);
+-	writeb(0x00, spec->mem_base + 0x100);
+-	writeb(0xff, spec->mem_base + 0x304);
++	ca0113_mmio_writeb(codec, 0xff, 0x304);
++	ca0113_mmio_writeb(codec, 0xff, 0x304);
++	ca0113_mmio_writeb(codec, 0xff, 0x304);
++	ca0113_mmio_writeb(codec, 0xff, 0x304);
++	ca0113_mmio_writeb(codec, 0x00, 0x100);
++	ca0113_mmio_writeb(codec, 0xff, 0x304);
++	ca0113_mmio_writeb(codec, 0x00, 0x100);
++	ca0113_mmio_writeb(codec, 0xff, 0x304);
++	ca0113_mmio_writeb(codec, 0x00, 0x100);
++	ca0113_mmio_writeb(codec, 0xff, 0x304);
++	ca0113_mmio_writeb(codec, 0x00, 0x100);
++	ca0113_mmio_writeb(codec, 0xff, 0x304);
+ 
+ 	ca0113_mmio_command_set(codec, 0x30, 0x2b, 0x3f);
+ 	ca0113_mmio_command_set(codec, 0x30, 0x2d, 0x3f);
+@@ -8833,13 +8869,12 @@ static void r3di_gpio_shutdown(struct hda_codec *codec)
+  */
+ static void sbz_region2_exit(struct hda_codec *codec)
+ {
+-	struct ca0132_spec *spec = codec->spec;
+ 	unsigned int i;
+ 
+ 	for (i = 0; i < 4; i++)
+-		writeb(0x0, spec->mem_base + 0x100);
++		ca0113_mmio_writeb(codec, 0x0, 0x100);
+ 	for (i = 0; i < 8; i++)
+-		writeb(0xb3, spec->mem_base + 0x304);
++		ca0113_mmio_writeb(codec, 0xb3, 0x304);
+ 
+ 	ca0113_mmio_gpio_set(codec, 0, false);
+ 	ca0113_mmio_gpio_set(codec, 1, false);
+@@ -9119,10 +9154,8 @@ static void ca0132_alt_vol_setup(struct hda_codec *codec)
+  */
+ static void sbz_pre_dsp_setup(struct hda_codec *codec)
+ {
+-	struct ca0132_spec *spec = codec->spec;
+-
+-	writel(0x00820680, spec->mem_base + 0x01C);
+-	writel(0x00820680, spec->mem_base + 0x01C);
++	ca0113_mmio_writel(codec, 0x00820680, 0x01C);
++	ca0113_mmio_writel(codec, 0x00820680, 0x01C);
+ 
+ 	chipio_write(codec, 0x18b0a4, 0x000000c2);
+ 
+@@ -9238,7 +9271,7 @@ static void ca0132_mmio_init_sbz(struct hda_codec *codec)
+ 
+ 	addr = ca0113_mmio_init_address_sbz;
+ 	for (i = 0; i < 3; i++)
+-		writel(0x00000000, spec->mem_base + addr[i]);
++		ca0113_mmio_writel(codec, 0x00000000, addr[i]);
+ 
+ 	cur_addr = i;
+ 	switch (ca0132_quirk(spec)) {
+@@ -9261,7 +9294,7 @@ static void ca0132_mmio_init_sbz(struct hda_codec *codec)
+ 	}
+ 
+ 	for (i = 0; i < 2; i++)
+-		writel(tmp[i], spec->mem_base + addr[cur_addr + i]);
++		ca0113_mmio_writel(codec, tmp[i], addr[cur_addr + i]);
+ 
+ 	cur_addr += i;
+ 
+@@ -9277,7 +9310,7 @@ static void ca0132_mmio_init_sbz(struct hda_codec *codec)
+ 	}
+ 
+ 	for (i = 0; i < count; i++)
+-		writel(data[i], spec->mem_base + addr[cur_addr + i]);
++		ca0113_mmio_writel(codec, data[i], addr[cur_addr + i]);
+ }
+ 
+ static void ca0132_mmio_init_ae5(struct hda_codec *codec)
+@@ -9291,8 +9324,8 @@ static void ca0132_mmio_init_ae5(struct hda_codec *codec)
+ 	count = ARRAY_SIZE(ca0113_mmio_init_data_ae5);
+ 
+ 	if (ca0132_quirk(spec) == QUIRK_AE7) {
+-		writel(0x00000680, spec->mem_base + 0x1c);
+-		writel(0x00880680, spec->mem_base + 0x1c);
++		ca0113_mmio_writel(codec, 0x00000680, 0x1c);
++		ca0113_mmio_writel(codec, 0x00880680, 0x1c);
+ 	}
+ 
+ 	for (i = 0; i < count; i++) {
+@@ -9301,15 +9334,15 @@ static void ca0132_mmio_init_ae5(struct hda_codec *codec)
+ 		 * a different value to 0x20c.
+ 		 */
+ 		if (i == 21 && ca0132_quirk(spec) == QUIRK_AE7) {
+-			writel(0x00800001, spec->mem_base + addr[i]);
++			ca0113_mmio_writel(codec, 0x00800001, addr[i]);
+ 			continue;
+ 		}
+ 
+-		writel(data[i], spec->mem_base + addr[i]);
++		ca0113_mmio_writel(codec, data[i], addr[i]);
+ 	}
+ 
+ 	if (ca0132_quirk(spec) == QUIRK_AE5)
+-		writel(0x00880680, spec->mem_base + 0x1c);
++		ca0113_mmio_writel(codec, 0x00880680, 0x1c);
+ }
+ 
+ static void ca0132_mmio_init(struct hda_codec *codec)
+@@ -9371,19 +9404,19 @@ static void ae5_register_set(struct hda_codec *codec)
+ 	}
+ 
+ 	for (i = cur_addr = 0; i < 3; i++, cur_addr++)
+-		writeb(tmp[i], spec->mem_base + addr[cur_addr]);
++		ca0113_mmio_writeb(codec, tmp[i], addr[cur_addr]);
+ 
+ 	/*
+ 	 * First writes are in single bytes, final are in 4 bytes. So, we use
+ 	 * writeb, then writel.
+ 	 */
+ 	for (i = 0; cur_addr < 12; i++, cur_addr++)
+-		writeb(data[i], spec->mem_base + addr[cur_addr]);
++		ca0113_mmio_writeb(codec, data[i], addr[cur_addr]);
+ 
+ 	for (; cur_addr < count; i++, cur_addr++)
+-		writel(data[i], spec->mem_base + addr[cur_addr]);
++		ca0113_mmio_writel(codec, data[i], addr[cur_addr]);
+ 
+-	writel(0x00800001, spec->mem_base + 0x20c);
++	ca0113_mmio_writel(codec, 0x00800001, 0x20c);
+ 
+ 	if (ca0132_quirk(spec) == QUIRK_AE7) {
+ 		ca0113_mmio_command_set_type2(codec, 0x48, 0x07, 0x83);
+-- 
+2.56.0
+
