@@ -200,3 +200,7 @@ logs/
   STATUS.md             append-only log of runs and decisions
   run-*/, capture-*/    per-run and host capture output (gitignored)
 ```
+
+## License
+
+GPL-2.0, the same as the Linux kernel. See [`LICENSE`](LICENSE).
