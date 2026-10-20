@@ -88,8 +88,8 @@ If the machine hangs at boot with the card installed, first add
 keeps all drivers off the card.
 
 ```sh
-git clone https://github.com/craciunoiuc/ae7-investigation.git
-cd ae7-investigation
+git clone https://github.com/craciunoiuc/sound-blaster-ae7-linux.git
+cd sound-blaster-ae7-linux
 vm/kernel/fetch.sh             # shallow linux-stable clone (source of the modules)
 host/dkms/mkdkms.sh            # sources for the running kernel + patches 0002/0003, test build
 sudo host/dkms/install.sh      # DKMS ae7-hda into updates/dkms + guarded vfio-pci claim
