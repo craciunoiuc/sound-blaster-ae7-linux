@@ -42,6 +42,16 @@ the DSP volume, so 59-60 (about -40 dB twice) is inaudible. `Output Select` =
 Headphone or Speakers. `Mic Boost Capture Switch` 2 (20 dB). No GPIO, relay or
 ca0113 changes were needed.
 
+**PipeWire.** The ACP path `analog-output-lineout` uses `Output Select` as a port
+option: port `output-speaker` = Speakers, `output-headphones` = Headphone. With
+jack 3 empty (`Line Out Front Jack` off) PipeWire reports the headphones port
+"not available" and the speaker port "unknown". WirePlumber does not save or
+restore a route that is not available (`state-routes.lua`), so at each login it
+selects the speaker port and sets `Output Select` = Speakers over the alsactl
+value. Fix: `host/wireplumber/51-ae7.conf` (`api.alsa.disable-mixer-path = true`
+for `1102:0010`). `api.alsa.soft-mixer = true` alone did not stop the reset.
+With the rule, the sink volume still sets `Master` (0.5 = 90, 0.32 = 79).
+
 **Jacks** (rear bracket, counted from the right):
 
 | Position | Use | State |

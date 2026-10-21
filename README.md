@@ -105,7 +105,17 @@ Add `iommu=pt` to the kernel command line and remove `splash`:
 
 Then `sync` and reboot. Be at the machine the first time.
 
-Set the mixer once (`sudo alsactl store` keeps it):
+With PipeWire, install the WirePlumber rule first. Without it PipeWire sets
+`Output Select` back to Speakers at each login, so headphones go silent after a
+reboot while the mic still works:
+
+```sh
+mkdir -p ~/.config/wireplumber/wireplumber.conf.d
+cp host/wireplumber/51-ae7.conf ~/.config/wireplumber/wireplumber.conf.d/
+systemctl --user restart wireplumber
+```
+
+Then set the mixer once (`sudo alsactl store` keeps it):
 
 ```sh
 amixer -c Creative cset name='HP/Speaker Auto Detect Playback Switch' off
@@ -115,8 +125,9 @@ amixer -c Creative cset name='Mic Boost Capture Switch' 2   # 20 dB
 ```
 
 `Master` scales both the DAC amp and the DSP volume: at 60 or less the card is
-silent. Jacks on the rear bracket, counted from the right: 1 = mic, 2 = headphone,
-3 = front out. Rear, Center/Sub and optical are untested.
+silent. The desktop volume still drives `Master` (50 % = 90, 32 % = 79). Jacks on
+the rear bracket, counted from the right: 1 = mic, 2 = headphone, 3 = front out.
+Rear, Center/Sub and optical are untested.
 
 - **After a kernel update** run `host/dkms/mkdkms.sh` and
   `sudo host/dkms/install.sh` again. Until then the guarded claim keeps the card
@@ -188,6 +199,7 @@ host/
   setup.sh              sudo: vfio-pci claim, sudoers for the VM rig; --undo
   bind.sh               --check / --status; sudo --bind / --unbind
   capture.sh            root lspci, IOMMU group, reset_method, host dmesg
+  wireplumber/51-ae7.conf  keeps PipeWire off the AE-7 Output Select
 vm/
   config.sh             shared variables (KVER, IDs, paths, QEMU defaults)
   run.sh                boot the guest, run one test, collect output

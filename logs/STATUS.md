@@ -258,3 +258,16 @@ bare-metal 7.1.3 runs, and several of their conclusions turned out wrong.
 - Docs rewritten to the final state: README, AGENTS.md (host mode / VM
   mode), reference/findings.md (result, evidence), experiments.md
   (results table), ae7-outputs.md (outcome on this card).
+
+## PipeWire resets Output Select  2026-10-21
+- After a reboot: mic works, no headphone sound. Kernel side clean
+  (DKMS driver, DSP loaded, iommu=pt, no faults). asound.state has
+  Output Select = Headphone, live value = Speakers.
+- Cause: ACP port options map to Output Select; headphones port "not
+  available" (Line Out Front Jack off, jack 3 empty), speaker port
+  "unknown". WirePlumber never saves/restores unavailable routes, so it
+  selects output-speaker at login and writes Speakers.
+- api.alsa.soft-mixer = true: still reset. api.alsa.disable-mixer-path
+  = true: Output Select stays Headphone across wireplumber and full
+  pipewire restarts and a stream start; sink volume still drives Master.
+- Rule in host/wireplumber/51-ae7.conf; README install step added.
