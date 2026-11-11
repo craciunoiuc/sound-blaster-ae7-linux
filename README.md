@@ -20,8 +20,12 @@ lspci -nn | grep -E '1102:0010|1b21:1080|10e3:8111'
 - `1102:0010` (Creative CA0132) and `1b21:1080` (ASMedia ASM1083/1085, rev 03):
   this fix is for you. Reports with this bridge fail on Intel and AMD boards,
   with kernels 4.x to 7.2.
-- `10e3:8111` (Tundra/IDT Tsi381 bridge, early AE-7 batches): the stock driver
-  works with this bridge. Your problem is a different one.
+- `10e3:8111` (Tundra/IDT Tsi381 bridge, early AE-7 batches): this bridge does
+  not lock up at probe, and the stock driver detects the card. On some systems
+  analog playback then goes silent after 10-30 seconds. That is a different,
+  interrupt-related problem, and this fix is not for it. An experimental
+  workaround (Tsi381 MSI vectors, `bdl_pos_adj=64`, a PipeWire rule) is in
+  [Melbar666/ae7-tsi381-msi-linux](https://github.com/Melbar666/ae7-tsi381-msi-linux).
 - AE-5 and AE-5 Plus (`1102:0012`, no bridge) are not affected.
 - AE-9: same bridge, same lockup, but its audio path also needs codec work. Not
   tested here; see [verzic/sb-ae9](https://github.com/verzic/sb-ae9).
