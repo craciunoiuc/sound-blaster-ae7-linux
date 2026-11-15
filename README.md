@@ -83,9 +83,12 @@ IOMMU faults on that read, so the host needs `iommu=pt`. Details and evidence:
 
 ## Install the fix
 
-You need git, make, dkms and the headers for your running kernel. Kernels built
-with clang (CachyOS) also need clang and lld. Only CachyOS with 7.2.10 is tested;
-the scripts expect the `sound/hda/` source layout of recent kernels.
+You need git, make, dkms and the headers for your kernels. Kernels built with
+clang (CachyOS) also need clang and lld. Each DKMS build needs network access: it
+fetches the `sound/hda` sources of that kernel version (about 15 MB) from the
+[linux-stable mirror on GitHub](https://github.com/gregkh/linux) and checks the
+commit against kernel.org. Tested on CachyOS 7.2.10; builds on 7.3.4 and 6.18.60.
+The scripts expect the `sound/hda/` source layout of recent kernels.
 
 If the machine hangs at boot with the card installed, first add
 `pci-stub.ids=1102:0010` to the kernel command line once at the boot menu. This
@@ -94,9 +97,8 @@ keeps all drivers off the card.
 ```sh
 git clone https://github.com/craciunoiuc/sound-blaster-ae7-linux.git
 cd sound-blaster-ae7-linux
-vm/kernel/fetch.sh             # shallow linux-stable clone (source of the modules)
-host/dkms/mkdkms.sh            # sources for the running kernel + patches 0002/0003, test build
-sudo host/dkms/install.sh      # DKMS ae7-hda into updates/dkms + guarded vfio-pci claim
+host/dkms/mkdkms.sh            # make the DKMS package (patches 0002/0003), test build
+sudo host/dkms/install.sh      # DKMS ae7-hda for all kernels + guarded vfio-pci claim
 ```
 
 Add `iommu=pt` to the kernel command line and remove `splash`:
@@ -133,12 +135,14 @@ silent. The desktop volume still drives `Master` (50 % = 90, 32 % = 79). Jacks o
 the rear bracket, counted from the right: 1 = mic, 2 = headphone, 3 = front out.
 Rear, Center/Sub and optical are untested.
 
-- **After a kernel update** run `host/dkms/mkdkms.sh` and
-  `sudo host/dkms/install.sh` again. Until then the guarded claim keeps the card
-  on vfio-pci: safe, but silent. The stock driver never touches the card.
+- **Kernel updates:** DKMS builds the modules for each new kernel during the
+  update. If that build fails (no network, a patch does not apply), the guarded
+  claim keeps the card on vfio-pci: safe, but silent. The stock driver never
+  touches the card. Check with `dkms status`, and look at the `make.log` in
+  `/var/lib/dkms/ae7-hda/`. Run `sudo host/dkms/install.sh` again to retry.
 - **Undo:** `sudo host/dkms/install.sh --uninstall` (back to the vfio-pci claim),
   `sudo host/setup.sh --undo` (removes the claim and the sudoers entry).
-- **Own kernel build:** apply the two patches with `git am` to a 7.2 tree.
+- **Own kernel build:** apply the two patches with `git am` to your tree.
 
 ## Upstream status and related work
 
@@ -198,7 +202,8 @@ reference/
   research.md           external research (bug reports, out-of-tree fixes)
   ae7-outputs.md        jack map and output hardware research
 host/
-  dkms/mkdkms.sh        DKMS source tree + test build for a host kernel
+  dkms/mkdkms.sh        make the DKMS package + test build for a host kernel
+  dkms/ae7-build.sh     DKMS build step: fetch sources, apply patches, build
   dkms/install.sh       sudo: DKMS install/uninstall, guarded vfio-pci claim
   setup.sh              sudo: vfio-pci claim, sudoers for the VM rig; --undo
   bind.sh               --check / --status; sudo --bind / --unbind

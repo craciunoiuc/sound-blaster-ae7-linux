@@ -103,10 +103,14 @@ steps.
   upstream write bursts is the known bridge wedge (see `reference/findings.md`);
   it can take down host devices on the same chipset.
 - **The stock `snd_hda_intel` must never probe the card.** Only the DKMS module
-  (with `flush_writes`) may drive it. Keep `/etc/modprobe.d/ae7-vfio.conf`; after
-  a kernel update the card stays on vfio-pci until the user rebuilds the DKMS
-  package for that kernel. The onboard AMD HDA controllers use `snd_hda_intel`
-  as normal.
+  (with `flush_writes`) may drive it. Keep `/etc/modprobe.d/ae7-vfio.conf`: on a
+  kernel without all four DKMS modules (the DKMS build for it failed or did not
+  run) the card stays on vfio-pci. A patched `snd-hda-intel` on the stock
+  `snd-hda-core` is not safe: the core writes are not flushed. DKMS skips a
+  module with the stock srcversion, so `host/dkms/ae7-build.sh` adds an
+  `ae7_hda` tag to each module. It fails the build if a patch does not apply,
+  a tag or `flush_writes` is missing. The onboard AMD HDA controllers use
+  `snd_hda_intel` as normal.
 - **Host mode needs `iommu=pt`.** Without it the controller's read past the PCM
   ring end faults in the IOMMU and the codec stops answering.
 - **The VM does not isolate the physical bus.** On bare metal, probing the card

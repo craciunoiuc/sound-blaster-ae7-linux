@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# install.sh — install or remove the ae7-hda DKMS modules on the host.
+# install.sh — install or remove the ae7-hda DKMS package on the host.
 #
-# Usage: sudo host/dkms/install.sh [--uninstall] [--kernel RELEASE]
+# Usage: sudo host/dkms/install.sh [--uninstall]
 #
-# Install: run host/dkms/mkdkms.sh first (as your user). Then this adds the
-# DKMS package, builds and installs it, and changes the vfio-pci claim so that
-# it stands down only for kernels that have the patched modules.
+# Install: run host/dkms/mkdkms.sh first (as your user). Then this replaces any
+# installed ae7-hda version, builds it for each kernel with headers, and changes
+# the vfio-pci claim so that it stands down only for kernels with the patched
+# modules. DKMS builds it for new kernels on its own (network needed).
 # Uninstall: removes the package and restores the plain vfio-pci claim.
 set -euo pipefail
 
@@ -17,65 +18,88 @@ CONF=/etc/modprobe.d/ae7-vfio.conf
 log() { printf '[ae7-hda] %s\n' "$*" >&2; }
 die() { printf '[ae7-hda] error: %s\n' "$*" >&2; exit 1; }
 
-krel="$(uname -r)" mode=install
+mode=install
 while (($#)); do
 	case "$1" in
 	--uninstall) mode=uninstall ;;
-	--kernel) krel="${2:?--kernel needs a value}"; shift ;;
-	-h | --help) sed -n '3,9s/^# \{0,1\}//p' "$0"; exit 0 ;;
+	-h | --help) sed -n '3,10s/^# \{0,1\}//p' "$0"; exit 0 ;;
 	*) die "unknown option: $1" ;;
 	esac
 	shift
 done
 ((EUID == 0)) || die "needs root: sudo $0"
 command -v dkms >/dev/null || die "dkms not found (pacman -S dkms)"
-ver="${krel%%-*}"
-pkg="ae7-hda/$ver"
+
+# Remove every ae7-hda version from DKMS and its sources from /usr/src.
+remove_all() {
+	local v
+	for v in $(dkms status ae7-hda 2>/dev/null | sed -nE 's|^ae7-hda/([^,: ]+).*|\1|p' | sort -u); do
+		log "remove ae7-hda/$v"
+		dkms remove "ae7-hda/$v" --all || true
+	done
+	rm -rf /usr/src/ae7-hda-*
+}
 
 if [[ $mode == uninstall ]]; then
-	dkms status "$pkg" 2>/dev/null | /usr/bin/grep -q . && dkms remove "$pkg" --all
-	rm -rf "/usr/src/ae7-hda-$ver"
-	depmod -a "$krel"
-	log "removed $pkg; restore the plain vfio-pci claim"
+	remove_all
+	log "removed ae7-hda; restore the plain vfio-pci claim"
 	rm -f "$CONF"
 	"$REPO/host/setup.sh" --user "${SUDO_USER:-$(logname)}"
 	log "done. Reboot: the stock driver stays away from the card (vfio-pci claims it)."
 	exit 0
 fi
 
-src="$VM_DIR/build/dkms/ae7-hda-$ver"
-[[ -f $src/dkms.conf ]] || die "no $src; run host/dkms/mkdkms.sh --kernel $krel first (as your user)"
+src="$VM_DIR/build/dkms/ae7-hda"
+[[ -f $src/dkms.conf ]] || die "no $src; run host/dkms/mkdkms.sh first (as your user)"
+ver="$(sed -n 's/^PACKAGE_VERSION="\(.*\)"$/\1/p' "$src/dkms.conf")"
+[[ -n $ver ]] || die "no PACKAGE_VERSION in $src/dkms.conf"
+pkg="ae7-hda/$ver"
 
-if dkms status "$pkg" 2>/dev/null | /usr/bin/grep -q .; then
-	log "remove the old $pkg first"
-	dkms remove "$pkg" --all
-fi
-rm -rf "/usr/src/ae7-hda-$ver"
-cp -r "$src" "/usr/src/ae7-hda-$ver"
-dkms add "$pkg"
-dkms build "$pkg" -k "$krel"
-dkms install "$pkg" -k "$krel" --force
-depmod -a "$krel"
-
-path="$(modinfo -k "$krel" -n snd-hda-intel)"
-[[ $path == */updates/* ]] || die "modprobe still picks $path, not the DKMS module"
-modinfo -k "$krel" -F parm snd-hda-intel | /usr/bin/grep -q '^flush_writes:' ||
-	die "installed snd-hda-intel has no flush_writes parameter"
-log "snd-hda-intel for $krel: $path"
-
-# vfio-pci claims the card unless this kernel has the patched modules.
+# vfio-pci claims the card unless this kernel has all four patched modules.
 tmp="$(mktemp "$CONF.XXXXXX")"
 cat >"$tmp" <<'EOF'
 # Installed by ae7-investigation host/dkms/install.sh. Undo: host/dkms/install.sh --uninstall
-# vfio-pci claims the AE-7 so the stock driver never probes it, unless the
+# vfio-pci claims the AE-7 so the stock driver never probes it, unless all four
 # patched ae7-hda modules (DKMS, updates/dkms) exist for the running kernel.
 options vfio-pci ids=1102:0010 disable_idle_d3=1
 softdep snd_hda_intel pre: vfio-pci
-install vfio-pci ls /usr/lib/modules/$(uname -r)/updates/dkms/snd-hda-intel.ko* >/dev/null 2>&1 || /sbin/modprobe --ignore-install vfio-pci $CMDLINE_OPTS
+install vfio-pci cd /usr/lib/modules/$(uname -r)/updates/dkms 2>/dev/null && ls snd-hda-core.ko* snd-hda-codec.ko* snd-hda-intel.ko* snd-hda-codec-ca0132.ko* >/dev/null 2>&1 || /sbin/modprobe --ignore-install vfio-pci $CMDLINE_OPTS
 EOF
 chmod 0644 "$tmp"
 mv -f "$tmp" "$CONF"
 log "wrote $CONF (guarded vfio-pci claim)"
+
+# True if modprobe picks the tagged ae7-hda build of all four modules for kernel $1.
+verify() {
+	local m path
+	for m in snd-hda-core snd-hda-codec snd-hda-intel snd-hda-codec-ca0132; do
+		path="$(modinfo -k "$1" -n "$m" 2>/dev/null)" || { log "$1: no $m"; return 1; }
+		[[ $path == */updates/* && -n $(modinfo -F ae7_hda "$path") ]] ||
+			{ log "$1: modprobe picks $path for $m, not the ae7-hda build"; return 1; }
+	done
+	modinfo -k "$1" -F parm snd-hda-intel | /usr/bin/grep -q '^flush_writes:' ||
+		{ log "$1: snd-hda-intel has no flush_writes parameter"; return 1; }
+}
+
+remove_all
+cp -r "$src" "/usr/src/ae7-hda-$ver"
+dkms add "$pkg"
+built=()
+for kdir in /usr/lib/modules/*/build; do
+	[[ -f $kdir/.config ]] || continue
+	k="${kdir%/build}" k="${k##*/}"
+	if ! dkms install "$pkg" -k "$k"; then
+		log "WARNING: no build for $k; there the card stays on vfio-pci"
+	elif ! verify "$k"; then
+		dkms uninstall "$pkg" -k "$k" || true
+		log "WARNING: removed the incomplete build for $k; there the card stays on vfio-pci"
+	else
+		built+=("$k")
+		log "ae7-hda modules for $k: OK"
+	fi
+done
+[[ " ${built[*]} " == *" $(uname -r) "* ]] ||
+	log "WARNING: no modules for the running kernel $(uname -r)"
 
 # A stock snd-hda-intel in the initramfs would load before the DKMS one.
 found=0

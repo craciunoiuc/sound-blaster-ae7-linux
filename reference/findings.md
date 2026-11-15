@@ -32,9 +32,9 @@ fail. Three independent 2026 efforts found the same (see
 
 | What | Why |
 |---|---|
-| DKMS `ae7-hda` (0002 + 0003), `host/dkms/` | the fix; stock modules wedge the bridge |
+| DKMS `ae7-hda` (0002 + 0003), `host/dkms/` | the fix; stock modules wedge the bridge. Each DKMS build fetches the linux-stable `sound/hda` of that kernel, so new kernels get the modules on their own |
 | cmdline `iommu=pt` | the controller reads past the end of the PCM ring at each wrap; a translated IOMMU faults on it (`IO_PAGE_FAULT` at the ring end) and the codec then stops answering |
-| guarded vfio-pci claim (`/etc/modprobe.d/ae7-vfio.conf`) | keeps the stock driver off the card on kernels without the DKMS modules |
+| guarded vfio-pci claim (`/etc/modprobe.d/ae7-vfio.conf`) | keeps the stock driver off the card on kernels without all four DKMS modules. A patched `snd-hda-intel` on a stock `snd-hda-core` does not flush the core writes. DKMS skips a module with the stock srcversion, so `ae7-build.sh` tags each module |
 | no `splash` | boot stopped with Plymouth and the card installed (mechanism unknown) |
 
 **Mixer.** `Master Playback Volume` 90 or more: Master scales both the DAC amp and

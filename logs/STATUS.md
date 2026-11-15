@@ -271,3 +271,36 @@ bare-metal 7.1.3 runs, and several of their conclusions turned out wrong.
   = true: Output Select stays Headphone across wireplumber and full
   pipewire restarts and a stream start; sink volume still drives Master.
 - Rule in host/wireplumber/51-ae7.conf; README install step added.
+
+## kernel 7.3.4: card silent, DKMS rebuilds itself now  2026-11-15
+- 2026-11-14 update 7.2.10 -> 7.3.4: 71-dkms-remove removed
+  ae7-hda/7.2.10 with the old kernel (last kernel -> deleted from the
+  DKMS tree); BUILD_EXCLUSIVE_KERNEL ^7.2.10- kept the install hook from
+  building it for 7.3.4. Guarded claim worked: card on vfio-pci, no
+  driver, no relay click at boot.
+- 0002 + 0003 apply on v7.3.4 and v6.18.60; hdac_bus bitfields still
+  fit (13 -> 14 bits, no layout change). 7.3 adds
+  access_sdnctl_in_dword (Hygon) only.
+- New package ae7-hda/<date>: host/dkms/ae7-build.sh is the DKMS MAKE
+  step. Sparse partial clone of github.com/gregkh/linux at v<base>
+  (3 s, 15 MB; git.kernel.org ignores --filter: 296 MB, 60 s), commit
+  checked against git.kernel.org ls-remote, git apply patches, upstream
+  Makefiles with obj-m cut to the one module. The Arch dkms hook builds
+  every /usr/src package for a new kernel; dkms build re-adds a package
+  that was deleted from the tree.
+- Test builds as user OK for 7.3.4-1-cachyos and 6.18.60-2-cachyos-lts.
+- First install.sh run: no sound. 7.3.4: dkms appends LLVM=1 to MAKE
+  for clang kernels, ae7-build.sh took 2 args only -> "usage" error.
+  6.18: dkms installed snd-hda-intel + ca0132 only. snd-hda-core and
+  snd-hda-codec have the stock srcversion (0002 changes only
+  hdaudio.h; srcversion sums only .c files in the module dir), and
+  dkms install without --force skips "already installed" modules.
+  The old install.sh used --force; the pacman hook does not. Guarded
+  claim saw snd-hda-intel and stood down: 6.18 had patched intel on
+  a stock core (no flush in init_cmd_io). Not booted.
+- Fix: ae7-build.sh passes VAR=VALUE args to make and adds ae7-tag.c
+  (MODULE_INFO ae7_hda) to each module, so srcversion differs; checks
+  the tag. mkdkms.sh test build passes LLVM=1 like dkms and fails on
+  a stock srcversion. Claim needs all four modules in updates/dkms.
+  install.sh checks all four (updates/, tag, flush_writes) and runs
+  dkms uninstall for a kernel that fails. Test builds OK on both.
